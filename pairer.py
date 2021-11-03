@@ -230,11 +230,11 @@ class CodePreservingBeautifulSoup(BeautifulSoup):
         for descendant in self.descendants:
             # return inner text within keep_tags, if we encounter them
             if isinstance(descendant, Tag) and descendant.name in self.tags_to_keep:
-                yield f"<|{descendant.name}|>{descendant.get_text()}</|{descendant.name}|>"
+                #yield f"<|{descendant.name}|>{descendant.get_text()}</|{descendant.name}|>"
+                yield str(descendant)
 
             # skip an inner text node inside "a"
             if isinstance(descendant, NavigableString) and descendant.parent.name in self.tags_to_keep:
-                1/0
                 continue
 
             # default behavior
@@ -244,14 +244,12 @@ class CodePreservingBeautifulSoup(BeautifulSoup):
             if isinstance(types, type):
                 if descendant_type is not types:
                     # We're not interested in strings of this type.
-                    1/0
                     continue
             elif types is not None and descendant_type not in types:
                 # We're not interested in strings of this type.
-                1/0
                 continue
             if strip:
                 descendant = descendant.strip()
                 if len(descendant) == 0:
-                    1/0
                     continue
+            yield descendant
