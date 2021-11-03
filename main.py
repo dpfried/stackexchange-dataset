@@ -1,3 +1,5 @@
+import sys
+import pprint
 import argparse, traceback
 from multiprocessing import Pool, cpu_count
 from utils import *
@@ -9,7 +11,10 @@ from lm_dataformat import Archive
 import zipfile
 
 
-def download_and_process_single(name, out_format, min_score, max_responses):
+def download_and_process_single(name, args):
+    out_format = args.out_format
+    min_score = args.min_score
+    max_responses = args.max_responses
     try:
         name = name.strip().lower()
         os.makedirs("dumps", exist_ok=True)
@@ -33,19 +38,34 @@ def download_and_process_single(name, out_format, min_score, max_responses):
             archiver = zipfile.ZipFile('{}/{}.zip'.format(out_folder, name), 'a')
         else:
             archiver = None
-        qa = QA_Pairer(path_to_xml, name=name, out_format=out_format, archiver=archiver, min_score=min_score, max_responses=max_responses)
+        if args.count_tokens:
+            from transformers import PreTrainedTokenizerFast
+            from tokenizers import ByteLevelBPETokenizer
+
+            SPECIAL_TOKENS = ["<|endoftext|>", "<|pad|>"]
+
+            tokenizer_model = ByteLevelBPETokenizer.from_file(
+                args.tokenizer_encoder_file,
+                args.tokenizer_vocab_file,
+            )
+            tokenizer_model.add_special_tokens(SPECIAL_TOKENS)
+            tokenizer = PreTrainedTokenizerFast(tokenizer_object=tokenizer_model)
+        else:
+            tokenizer = None
+        qa = QA_Pairer(path_to_xml, name=name, out_format=out_format, archiver=archiver, 
+                       min_score=min_score, max_responses=max_responses, tokenizer=tokenizer)
         qa.main()
         if out_format == "lm_dataformat":
             archiver.commit(name)
         elif out_format == "zip":
             archiver.close()
-        try:
-            os.remove(path_to_7z)
-        except FileNotFoundError:
-            print('ERROR: FileNotFoundError: File {} not found'.format(s.sites[name]["url"]))
-        filelist = [f for f in os.listdir("dumps/{}".format(name)) if f.endswith(".xml")]
-        for f in filelist:
-            os.remove(os.path.join("dumps/{}".format(name), f))
+        # try:
+        #     os.remove(path_to_7z)
+        # except FileNotFoundError:
+        #     print('ERROR: FileNotFoundError: File {} not found'.format(s.sites[name]["url"]))
+        # filelist = [f for f in os.listdir("dumps/{}".format(name)) if f.endswith(".xml")]
+        # for f in filelist:
+        #     os.remove(os.path.join("dumps/{}".format(name), f))
     except:
         traceback.print_exc()
 
@@ -65,7 +85,8 @@ def main(args):
     # init pool with as many CPUs as available
     cpu_no = cpu_count() - 1
     p = Pool(cpu_no)
-    p.starmap(download_and_process_single, zip(names, repeat(args.out_format), repeat(args.min_score), repeat(args.max_responses)))
+    #p.starmap(download_and_process_single, zip(names, repeat(args.out_format), repeat(args.min_score), repeat(args.max_responses), repeat(args))
+    p.starmap(download_and_process_single, zip(names, repeat(args)))
 
 
 if __name__ == "__main__":
@@ -74,17 +95,24 @@ if __name__ == "__main__":
                     'question-answer pair text dataset for Language Models')
     parser.add_argument('--names', help='names of stackexchanges to download, extract & parse, separated by commas. '
                                         'If "all", will download, extract & parse *every* stackoverflow site',
-                        default="3dprinting.stackexchange,3dprinting.meta.stackexchange",
+                        default="stackoverflow",
                         type=str)
     parser.add_argument('--out_format', help='format of out file - if you are processing everything this will need to be '
                                              'lm_dataformat, as you will run into number of files per directory limits.',
-                        default="zip",
+                        default="lm_dataformat",
+                        choices=["txt", "lm_dataformat", "zip", "none"],
                         type=str)
     parser.add_argument('--min_score', help='minimum score of a response in order to be included in the dataset. Default 3.',
                         type=int, default=3)
     parser.add_argument('--max_responses', help='maximum number of responses (sorted by score) to include for each question. '
                                                 'Default 3.', type=int, default=3)
+    parser.add_argument('--count_tokens', action='store_true')
+    parser.add_argument('--tokenizer_encoder_file', type=str, default='/private/home/halilakin/src/gpt2_bpe/encoder.json')
+    parser.add_argument('--tokenizer_vocab_file', type=str, default='/private/home/halilakin/src/gpt2_bpe/vocab.bpe')
+
+    print(' '.join(sys.argv))
     args = parser.parse_args()
+    pprint.pprint(vars(args))
     main(args)
 
 

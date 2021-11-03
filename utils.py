@@ -1,5 +1,21 @@
 import os, re
 
+class Mean:
+    def __init__(self):
+        self.total = 0.0
+        self.count = 0.0
+
+    def add(self, value, weight=1.0):
+        self.total += value
+        self.count += weight
+
+    @property
+    def mean(self):
+        if self.count == 0.0:
+            return 0.0
+        else:
+            return self.total / self.count
+
 
 def header_info(xml_path):
     os.system("head {}".format(xml_path))
@@ -24,6 +40,7 @@ def is_answer(elem_attribs):
 
 
 def filter_newlines(text):
+    # replace three or more \n with \n\n
     return re.sub("\n{3,}", "\n\n", text)
 
 
@@ -61,3 +78,7 @@ def trim_attribs(elem_attribs, attrib_type="question"):
         return new_dict
     else:
         raise Exception('Unrecognized attribute type - please specify either question or answer')
+
+def underscore_print_counter(counter, n=None, prefix="\t"):
+    for key, value in counter.most_common(n=n):
+        print(f"{prefix}{key}:\t{value:_}")

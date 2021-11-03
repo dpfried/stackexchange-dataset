@@ -1,14 +1,21 @@
+import re
 import traceback
 import xml.etree.ElementTree as etree
-from collections import defaultdict
-from bs4 import BeautifulSoup
+from collections import defaultdict, Counter
+from bs4 import BeautifulSoup, PageElement
 from tqdm import tqdm
+import pprint
+
 from utils import *
 
+from typing import Set
 
 class QA_Pairer():
 
-    def __init__(self, xml_path, name=None, out_folder="out", min_score=3, max_responses=3, out_format="txt", archiver=None):
+    tag_split_re = re.compile(r"[\<\>]+")
+
+    def __init__(self, xml_path, name=None, out_folder="out", min_score=3, max_responses=3, out_format="txt", archiver=None,
+                 tokenizer=None):
         """Makes a text dataset from StackExchange dumps"""
         self.xml_path = xml_path
         if name is None:
@@ -22,11 +29,20 @@ class QA_Pairer():
         # min_score required to parse an answer
         self.min_score = min_score
         self.max_responses = max_responses
-        assert out_format in ["txt", "lm_dataformat", "zip"], "Out format not recognized"
+        assert out_format in ["txt", "lm_dataformat", "zip", "none"], "Out format not recognized"
         self.out_format = out_format
         if out_format in ["lm_dataformat", "zip"]:
             assert archiver is not None
             self.ar = archiver
+
+        self.tag_counter = Counter()
+
+        self.tokenizer = tokenizer
+        self.token_counter = Counter()
+        self.token_count = 0
+
+        self.question_count = 0
+        self.answer_count = 0
 
     def main(self):
         """iterates through SE xmls and:
@@ -40,7 +56,7 @@ class QA_Pairer():
 
         """
         os.makedirs(self.out_folder, exist_ok=True)
-        for event, elem in tqdm(etree.iterparse(self.xml_path, events=('end',)), desc="Parsing {} XML file".format(self.name)):
+        for event, elem in tqdm(etree.iterparse(self.xml_path, events=('end',)), desc="Parsing {} XML file".format(self.name), ncols=80):
             if elem.tag == "row":
                 try:
                     attribs = defaultdict(lambda: None, elem.attrib)
@@ -60,6 +76,9 @@ class QA_Pairer():
                     elem.clear()
                 except:
                     traceback.print_exc()
+        print("processing complete")
+        self.print_status()
+
 
     def is_above_threshold(self, a_attribs):
         """
@@ -101,6 +120,56 @@ class QA_Pairer():
             else:
                 self.questions[a_attribs["ParentId"]]["ParsedAnswers"] += 1
 
+    def write(self, out_name, str_rep):
+        if self.out_format == "none":
+            pass
+        elif self.out_format == "txt":
+            with open("{}/{}".format(self.out_folder, out_name), 'w') as f:
+                try:
+                    f.write(filter_newlines(out_str))
+                except:
+                    f.write(filter_newlines(handle_unicode_errors(out_str)))
+        elif self.out_format == "zip":
+            try:
+                self.ar.writestr(out_name, filter_newlines(out_str))
+            except:
+                self.ar.writestr(out_name, filter_newlines(handle_unicode_errors(out_str)))
+        elif self.out_format == "lm_dataformat":
+            try:
+                self.ar.add_data(filter_newlines(out_str), meta={
+                    'name': out_name})
+            except:
+                self.ar.add_data(filter_newlines(handle_unicode_errors(out_str)), meta={
+                    'name': out_name})
+
+    @classmethod
+    def get_tags(cls, attrib):
+        if "Tags" not in attrib:
+            return []
+        tags = cls.tag_split_re.split(attrib["Tags"])
+        return [t for t in tags if bool(t)]
+
+    def update_tag_and_token_counts(self, tags, out_str):
+        self.tag_counter.update(tags)
+        if self.tokenizer is not None:
+            tokens = self.tokenizer(out_str)['input_ids']
+            token_count = len(tokens)
+            for tag in tags:
+                self.token_counter[tag] += token_count
+            self.token_count += token_count
+
+    def print_status(self):
+        print(f"{self.question_count:_} questions")
+        print(f"{self.answer_count:_} answers")
+        print(f"{self.answer_count / self.question_count:.2f} answers / question")
+
+        print("common tags:")
+        underscore_print_counter(self.tag_counter, n=20)
+        if self.tokenizer is not None:
+            print(f"total tokens: {self.token_count:_}")
+            underscore_print_counter(self.token_counter, n=20)
+        print()
+
     def check_complete(self, a_attribs):
         """
         checks if the parent question of the previously added answer has no future answers, and if so,
@@ -131,23 +200,58 @@ class QA_Pairer():
                                     break
                                 out_str += 'A:\n\n{}\n\n'.format(BeautifulSoup(parent["Answers"][k]["Body"], "html.parser").get_text())
                                 count += 1
-                        if self.out_format == "txt":
-                            with open("{}/{}".format(self.out_folder, out_name), 'w') as f:
-                                try:
-                                    f.write(filter_newlines(out_str))
-                                except:
-                                    f.write(filter_newlines(handle_unicode_errors(out_str)))
-                        elif self.out_format == "zip":
-                            try:
-                                self.ar.writestr(out_name, filter_newlines(out_str))
-                            except:
-                                self.ar.writestr(out_name, filter_newlines(handle_unicode_errors(out_str)))
-                        elif self.out_format == "lm_dataformat":
-                            try:
-                                self.ar.add_data(filter_newlines(out_str), meta={
-                                    'name': out_name})
-                            except:
-                                self.ar.add_data(filter_newlines(handle_unicode_errors(out_str)), meta={
-                                    'name': out_name})
+                                self.answer_count += 1
+
+                        self.question_count += 1
+                        tags = self.get_tags(parent)
+                        self.update_tag_and_token_counts(tags, out_str)
+                        self.write(out_name, out_str)
+
+                        if self.question_count % 100_000 == 0:
+                            self.print_status()
+
         for key in keys_to_del:
             self.questions.pop(key, None)
+
+from bs4 import BeautifulSoup, NavigableString, CData, Tag
+
+
+class CodePreservingBeautifulSoup(BeautifulSoup):
+    """
+    modified from https://stackoverflow.com/a/42802393, with changes for beautifulsoup 4.10
+    """
+    tags_to_keep = {'code'}
+
+    def _all_strings(self, strip=False, types=BeautifulSoup.default):# strip=False, types=(NavigableString, CData)):
+
+        if types is self.default:
+            types = self.interesting_string_types
+
+        for descendant in self.descendants:
+            # return inner text within keep_tags, if we encounter them
+            if isinstance(descendant, Tag) and descendant.name in self.tags_to_keep:
+                yield f"<|{descendant.name}|>{descendant.get_text()}</|{descendant.name}|>"
+
+            # skip an inner text node inside "a"
+            if isinstance(descendant, NavigableString) and descendant.parent.name in self.tags_to_keep:
+                1/0
+                continue
+
+            # default behavior
+            if (types is None and not isinstance(descendant, NavigableString)):
+                continue
+            descendant_type = type(descendant)
+            if isinstance(types, type):
+                if descendant_type is not types:
+                    # We're not interested in strings of this type.
+                    1/0
+                    continue
+            elif types is not None and descendant_type not in types:
+                # We're not interested in strings of this type.
+                1/0
+                continue
+            if strip:
+                descendant = descendant.strip()
+                if len(descendant) == 0:
+                    1/0
+                    continue
