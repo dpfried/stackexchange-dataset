@@ -5,6 +5,7 @@ from collections import defaultdict, Counter
 from bs4 import BeautifulSoup, PageElement
 from tqdm import tqdm
 import pprint
+import csv
 
 from utils import *
 
@@ -14,12 +15,15 @@ class QA_Pairer():
 
     tag_split_re = re.compile(r"[\<\>]+")
 
-    def __init__(self, xml_path, name=None, out_folder="out", min_score=3, max_responses=3, out_format="txt", archiver=None,
-                 tokenizer=None):
+    remove_username_re = re.compile(r"@\w+")
+
+    def __init__(self, post_path, name=None, out_folder="out", min_score=3, max_responses=3, out_format="txt", archiver=None,
+                 tokenizer=None, comment_path=None, in_format="xml"):
         """Makes a text dataset from StackExchange dumps"""
-        self.xml_path = xml_path
+        self.post_path = post_path
+        self.comment_path = comment_path
         if name is None:
-            self.name = os.path.dirname(xml_path).replace("dumps/", "")
+            self.name = os.path.dirname(post_path).replace("dumps/", "")
         else:
             self.name = name
         # dict to save questions
@@ -29,6 +33,8 @@ class QA_Pairer():
         # min_score required to parse an answer
         self.min_score = min_score
         self.max_responses = max_responses
+        assert in_format in ["csv", "xml"], "In format not recognized"
+        self.in_format = in_format
         assert out_format in ["txt", "lm_dataformat", "zip", "none"], "Out format not recognized"
         self.out_format = out_format
         if out_format in ["lm_dataformat", "zip"]:
@@ -44,6 +50,35 @@ class QA_Pairer():
         self.question_count = 0
         self.answer_count = 0
 
+    def make_iter(self, file):
+        if self.in_format == 'csv':
+            with open(file, 'r') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    record = defaultdict(lambda: None, {k: None if v == '' else v for k, v in row.items()})
+                    yield record
+        else:
+            for event, elem in etree.iterparse(file, events=('end',)):
+                if elem.tag == 'row':
+                    record = defaultdict(lambda: None, elem.attrib)
+                    yield record
+                    elem.clear()
+
+    def parse_comments(self):
+        comment_dict = defaultdict(list)
+        comment_scores = []
+        for record in tqdm(self.make_iter(self.comment_path), desc="Parsing {} comment file".format(self.name), ncols=80):
+            text = record["Text"]
+            text = BeautifulSoup(text, "html.parser").get_text()
+            text = self.remove_username_re.sub("", text)
+            try:
+                score = int(record["Score"])
+                comment_scores.append(score)
+            except:
+                score = None
+            post_id = int(record["PostId"])
+            comment_dict[post_id].append((text, score))
+
     def main(self):
         """iterates through SE xmls and:
 
@@ -56,26 +91,23 @@ class QA_Pairer():
 
         """
         os.makedirs(self.out_folder, exist_ok=True)
-        for event, elem in tqdm(etree.iterparse(self.xml_path, events=('end',)), desc="Parsing {} XML file".format(self.name), ncols=80):
-            if elem.tag == "row":
-                try:
-                    attribs = defaultdict(lambda: None, elem.attrib)
-                    if is_question(attribs):
-                        if has_answers(attribs):
-                            trim_attribs(attribs, "question")
-                            self.questions[attribs["Id"]] = attribs
-                        else:
-                            # if the question has no answers, discard it
-                            continue
-                    elif is_answer(attribs):
-                        # if is accepted answer, append answer Body to relevant questions "AcceptedAnswer" field
-                        # if the answer's score > min_score
-                        # append the answer to the relevant question's OtherAnswers dict
-                        self.add_answer(attribs)
-                        self.check_complete(attribs)
-                    elem.clear()
-                except:
-                    traceback.print_exc()
+        for record in tqdm(self.make_iter(self.post_path), desc="Parsing {} XML file".format(self.name), ncols=80):
+            try:
+                if is_question(record):
+                    if has_answers(record):
+                        trim_attribs(record, "question")
+                        self.questions[record["Id"]] = record
+                    else:
+                        # if the question has no answers, discard it
+                        continue
+                elif is_answer(record):
+                    # if is accepted answer, append answer Body to relevant questions "AcceptedAnswer" field
+                    # if the answer's score > min_score
+                    # append the answer to the relevant question's OtherAnswers dict
+                    self.add_answer(record)
+                    self.check_complete(record)
+            except:
+                traceback.print_exc()
         print("processing complete")
         self.print_status()
 
@@ -120,7 +152,7 @@ class QA_Pairer():
             else:
                 self.questions[a_attribs["ParentId"]]["ParsedAnswers"] += 1
 
-    def write(self, out_name, str_rep):
+    def write(self, out_name, out_str):
         if self.out_format == "none":
             pass
         elif self.out_format == "txt":
@@ -185,10 +217,19 @@ class QA_Pairer():
                         out_name = "{}_{}.txt".format(self.name, parent["Id"].zfill(10))
                         out_str = ""
                         out_str += 'Q:\n\n'
-                        if parent["Title"] is not None:
-                            out_str += '{}\n\n'.format(BeautifulSoup(parent["Title"], "html.parser").get_text())
-                        if parent["Body"] is not None:
-                            out_str += '{}\n\n'.format(BeautifulSoup(parent["Body"], "html.parser").get_text())
+
+                        if parent["TitleParsed"] is not None:
+                            title_parsed = parent["TitleParsed"]
+                            out_str += '{}\n\n'.format(title_parsed)
+                        elif parent["Title"] is not None:
+                            title_parsed = BeautifulSoup(parent["Title"], "html.parser").get_text()
+                            out_str += '{}\n\n'.format(title_parsed)
+                        if parent["BodyParsed"] is not None:
+                            body_parsed = parent["BodyParsed"]
+                            out_str += '{}\n\n'.format(body_parsed)
+                        elif parent["Body"] is not None:
+                            body_parsed = CodePreservingBeautifulSoup(parent["Body"], "html.parser").get_text()
+                            out_str += '{}\n\n'.format(body_parsed)
                         if parent["Answers"] is not None:
                             key_score_dict = {}
                             for k, a in parent["Answers"].items():
@@ -198,7 +239,8 @@ class QA_Pairer():
                             for k in key_score_dict:
                                 if count >= self.max_responses:
                                     break
-                                out_str += 'A:\n\n{}\n\n'.format(BeautifulSoup(parent["Answers"][k]["Body"], "html.parser").get_text())
+                                parent_body_parsed = parent["Answers"][k].get("BodyParsed", CodePreservingBeautifulSoup(parent["Answers"][k]["Body"], "html.parser").get_text())
+                                out_str += 'A:\n\n{}\n\n'.format(parent_body_parsed)
                                 count += 1
                                 self.answer_count += 1
 
@@ -221,6 +263,7 @@ class CodePreservingBeautifulSoup(BeautifulSoup):
     modified from https://stackoverflow.com/a/42802393, with changes for beautifulsoup 4.10
     """
     tags_to_keep = {'code'}
+    keep_only_with_newlines = True
 
     def _all_strings(self, strip=False, types=BeautifulSoup.default):# strip=False, types=(NavigableString, CData)):
 
@@ -229,12 +272,15 @@ class CodePreservingBeautifulSoup(BeautifulSoup):
 
         for descendant in self.descendants:
             # return inner text within keep_tags, if we encounter them
-            if isinstance(descendant, Tag) and descendant.name in self.tags_to_keep:
+            if isinstance(descendant, Tag) and descendant.name in self.tags_to_keep and \
+                ((not self.keep_only_with_newlines) or ('\n' in str(descendant))):
+
                 #yield f"<|{descendant.name}|>{descendant.get_text()}</|{descendant.name}|>"
                 yield str(descendant)
 
             # skip an inner text node inside "a"
-            if isinstance(descendant, NavigableString) and descendant.parent.name in self.tags_to_keep:
+            if isinstance(descendant, NavigableString) and descendant.parent.name in self.tags_to_keep and \
+                ((not self.keep_only_with_newlines) or ('\n' in str(descendant))):
                 continue
 
             # default behavior

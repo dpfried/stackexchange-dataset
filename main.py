@@ -19,7 +19,8 @@ def download_and_process_single(name, args):
         name = name.strip().lower()
         os.makedirs("dumps", exist_ok=True)
         s = Stack_Exchange_Downloader(name)
-        path_to_xml = "dumps/{}/Posts.xml".format(name)
+        path_to_posts = "dumps/{}/Posts.{}".format(name, args.in_format)
+        path_to_comments = "dumps/{}/Comments.{}".format(name, args.in_format)
         if name != "stackoverflow":
             path_to_7z = "dumps/{}.7z".format(s.sites[name]["url"])
         else:
@@ -29,7 +30,7 @@ def download_and_process_single(name, args):
         if not os.path.isfile(path_to_7z):
             # download 7z if it's not downloaded already
             s.download()
-        if not os.path.isfile(path_to_xml):
+        if not os.path.isfile(path_to_posts):
             # extract 7z if it's not extracted already
             s.extract()
         if out_format == "lm_dataformat":
@@ -52,8 +53,9 @@ def download_and_process_single(name, args):
             tokenizer = PreTrainedTokenizerFast(tokenizer_object=tokenizer_model)
         else:
             tokenizer = None
-        qa = QA_Pairer(path_to_xml, name=name, out_format=out_format, archiver=archiver, 
-                       min_score=min_score, max_responses=max_responses, tokenizer=tokenizer)
+        qa = QA_Pairer(path_to_posts, name=name, out_format=out_format, archiver=archiver, 
+                       min_score=min_score, max_responses=max_responses, tokenizer=tokenizer,
+                      comment_path=path_to_comments, in_format=args.in_format)
         qa.main()
         if out_format == "lm_dataformat":
             archiver.commit(name)
@@ -96,6 +98,10 @@ if __name__ == "__main__":
     parser.add_argument('--names', help='names of stackexchanges to download, extract & parse, separated by commas. '
                                         'If "all", will download, extract & parse *every* stackoverflow site',
                         default="stackoverflow",
+                        type=str)
+    parser.add_argument('--in_format', help='format of in file' 'lm_dataformat, as you will run into number of files per directory limits.',
+                        default="xml",
+                        choices=["xml", "csv"],
                         type=str)
     parser.add_argument('--out_format', help='format of out file - if you are processing everything this will need to be '
                                              'lm_dataformat, as you will run into number of files per directory limits.',
