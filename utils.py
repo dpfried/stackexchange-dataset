@@ -82,3 +82,15 @@ def trim_attribs(elem_attribs, attrib_type="question"):
 def underscore_print_counter(counter, n=None, prefix="\t"):
     for key, value in counter.most_common(n=n):
         print(f"{prefix}{key}:\t{value:_}")
+
+def threshold(lower_bounds, value):
+    # make sure we're not doing string comparisons
+    assert float(value) == value
+    assert all(float(x) == x for x in lower_bounds)
+
+    disc_threshold = 0
+    while disc_threshold < len(lower_bounds) and lower_bounds[disc_threshold] <= value:
+        disc_threshold += 1
+    disc_threshold -=1
+    assert 0 <= disc_threshold < len(lower_bounds)
+    return disc_threshold

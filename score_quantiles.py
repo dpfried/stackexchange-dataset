@@ -3,8 +3,15 @@ import lxml.etree
 import numpy as np
 import pickle
 
-def stackexchange_reader(filename, rng, yield_rate=None, parse_html=True):
+def zeno(num_vals):
+    last = 0
+    vals = [last]
+    while len(vals) < num_vals:
+        last = 1 - ((1 - last) / 2)
+        vals.append(last)
+    return np.array(vals)
 
+def stackexchange_reader(filename, rng, yield_rate=None, parse_html=True):
     basename = filename.split('/')[-1]
     if basename == 'Comments.xml':
         text_field = 'Text'
@@ -26,7 +33,8 @@ def stackexchange_reader(filename, rng, yield_rate=None, parse_html=True):
                     continue
                 text = element.attrib[text_field]
                 score = element.attrib["Score"]
-                yield int(score)
+                is_answer = (element.attrib.get("PostTypeId") == "2")
+                yield (int(score), is_answer)
                 # if parse_html:
                 #     from bs4 import BeautifulSoup
                 #     parsed = BeautifulSoup(text, "html.parser")
@@ -35,24 +43,35 @@ def stackexchange_reader(filename, rng, yield_rate=None, parse_html=True):
                 #     yield text
 
 if __name__ == "__main__":
-    #filename = 'dumps/stackoverflow/Comments.xml'
-    filename = 'dumps/stackoverflow/Posts.xml'
-    out_fname = filename+"_scores-filt.pkl"
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("filename")
+    parser.add_argument("--log_spacing", action='store_true')
+    parser.add_argument("--buckets", type=int, default=6)
+
+    args = parser.parse_args()
+
+    filename = args.filename
 
     print(filename)
 
-    scores = np.array(list(stackexchange_reader(filename, None)))
+    question_or_comment_scores = []
+    answer_scores = []
 
-    scores = scores[scores > 0]
+    for score, is_answer in stackexchange_reader(filename, None):
+        (answer_scores if is_answer else question_or_comment_scores).append(score)
 
-    def make_qs(num_buckets):
-        return np.arange(num_buckets+1)/num_buckets
+    for name, scores in [("question_or_comment", question_or_comment_scores), ("answer", answer_scores)]:
+        scores = np.array(scores)
+        scores = scores[scores >= 0]
 
-    with open(out_fname, 'wb') as f:
-        pickle.dump(scores, f)
+        num_buckets = args.buckets
 
-    for buckets in [5, 10]:
-        qs = make_qs(buckets)
+        if args.log_spacing:
+            qs = zeno(num_buckets)
+        else:
+            qs = np.arange(num_buckets+1)/num_buckets
+
         for q, v in zip(qs, np.quantile(scores, qs)):
             print(f"{q:0.3f}: {v}")
         print()

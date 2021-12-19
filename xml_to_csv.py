@@ -16,12 +16,14 @@ if __name__ == "__main__":
     parser.add_argument('input_xml')
     args = parser.parse_args()
 
-    if args.input_xml.endswith("Comments.xml"):
+    if "Comments" in args.input_xml:
+        # 11K it/s
         columns = ["Id", "PostId", "Score", "Text", "CreationDate", "UserId", "ContentLicense"]
         cols_to_html_parse = {"Text"}
         cols_to_code_preserve_html_parse = set()
         num_rows = 82_037_744 - 3
-    elif args.input_xml.endswith("Posts.xml"):
+    elif "Posts" in args.input_xml:
+        # 2.7K it/s
         columns = [
             # question fields
             "Id", "PostTypeId", "AcceptedAnswerId", "CreationDate", "Score", "ViewCount", "Body", "OwnerUserId", "LastEditorUserId", "LastEditorDisplayName", "LastEditDate", "LastActivityDate", "Title", "Tags", "AnswerCount", "CommentCount", "FavoriteCount", "CommunityOwnedDate", "ContentLicense",
@@ -50,6 +52,7 @@ if __name__ == "__main__":
                     attribs[make_parsed_key(col)] = BeautifulSoup(text, "html.parser").get_text()
                 except Exception as e:
                     print(e)
+                    elem.clear()
                     continue
         for col in cols_to_code_preserve_html_parse:
             if attribs[col] != None:
@@ -58,9 +61,10 @@ if __name__ == "__main__":
                     attribs[make_parsed_key(col)] = CodePreservingBeautifulSoup(text, "html.parser").get_text()
                 except Exception as e:
                     print(e)
+                    elem.clear()
                     continue
         try:
             writer.writerows([attribs])
         except Exception as e:
             print(e)
-            continue
+        elem.clear()
