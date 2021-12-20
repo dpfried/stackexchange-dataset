@@ -2,10 +2,11 @@ import re
 import traceback
 import xml.etree.ElementTree as etree
 from collections import defaultdict, Counter
-from bs4 import BeautifulSoup, PageElement
+from bs4 import BeautifulSoup, PageElement, NavigableString, CData, Tag
 from tqdm import tqdm
 import pprint
 import csv
+import numpy as np
 
 from utils import *
 
@@ -15,10 +16,30 @@ class QA_Pairer():
 
     tag_split_re = re.compile(r"[\<\>]+")
 
-    remove_username_re = re.compile(r"@\w+")
+    # remove @token if it occurs at the beginning of the string or preceeded by whitespace
+    remove_username_re = re.compile(r"(^|\s+)@\w+")
 
-    def __init__(self, post_path, name=None, out_folder="out", min_score=3, max_responses=3, out_format="txt", archiver=None,
-                 tokenizer=None, comment_path=None, in_format="xml"):
+    threshold_lower_bounds = {
+        # ('stackoverflow', 'comments'): [0, 0, 0, 1, 1, 2], # not enough have a positive score to use
+        ('stackoverflow', 'questions'): [0, 1, 2, 3, 6, 11],
+        ('stackoverflow', 'answers'): [0, 1, 2, 4, 7, 14],
+    }
+
+    def __init__(self, post_path,
+                name=None,
+                out_folder="out",
+                out_format="txt",
+                archiver=None,
+                in_format="xml",
+                comment_path=None, 
+                max_responses=3,
+                max_comments=5,
+                min_score=3,
+                attribute_move_probability=0.5,
+                shard_number=None,
+                num_shards=None, 
+                tokenizer=None,
+                count_tokens=False):
         """Makes a text dataset from StackExchange dumps"""
         self.post_path = post_path
         self.comment_path = comment_path
@@ -33,16 +54,19 @@ class QA_Pairer():
         # min_score required to parse an answer
         self.min_score = min_score
         self.max_responses = max_responses
+        self.max_comments = max_comments
+        self.attribute_move_probability = attribute_move_probability
         assert in_format in ["csv", "xml"], "In format not recognized"
         self.in_format = in_format
         assert out_format in ["txt", "lm_dataformat", "zip", "none"], "Out format not recognized"
         self.out_format = out_format
-        if out_format in ["lm_dataformat", "zip"]:
+        if out_format in ["lm_dataformat", "zip", "fairseq"]:
             assert archiver is not None
             self.ar = archiver
 
         self.tag_counter = Counter()
 
+        self.count_tokens = count_tokens
         self.tokenizer = tokenizer
         self.token_counter = Counter()
         self.token_count = 0
@@ -50,9 +74,16 @@ class QA_Pairer():
         self.question_count = 0
         self.answer_count = 0
 
+        self.shard_number = shard_number
+        self.num_shards = num_shards
+
+        # either None or (if comment_path was passed) a dict Dict[PostId: str, (score: int, text: str)
+        self.comment_dict = self.parse_comments()
+
     def make_iter(self, file):
         if self.in_format == 'csv':
             with open(file, 'r') as f:
+                f = (line.replace('\0', '') for line in f)
                 reader = csv.DictReader(f)
                 for row in reader:
                     record = defaultdict(lambda: None, {k: None if v == '' else v for k, v in row.items()})
@@ -66,18 +97,17 @@ class QA_Pairer():
 
     def parse_comments(self):
         comment_dict = defaultdict(list)
-        comment_scores = []
-        for record in tqdm(self.make_iter(self.comment_path), desc="Parsing {} comment file".format(self.name), ncols=80):
+        for record in tqdm(self.make_iter(self.comment_path), desc="Parsing {} comment file".format(self.name), ncols=120):
             text = record["Text"]
-            text = BeautifulSoup(text, "html.parser").get_text()
+            if text is None:
+                continue
+            if self.in_format == 'xml':
+                text = BeautifulSoup(text, "html.parser").get_text()
             text = self.remove_username_re.sub("", text)
-            try:
-                score = int(record["Score"])
-                comment_scores.append(score)
-            except:
-                score = None
-            post_id = int(record["PostId"])
-            comment_dict[post_id].append((text, score))
+            post_id = record["PostId"]
+            comment_dict[post_id].append(text)
+        self.comment_dict = comment_dict
+        return comment_dict
 
     def main(self):
         """iterates through SE xmls and:
@@ -91,9 +121,20 @@ class QA_Pairer():
 
         """
         os.makedirs(self.out_folder, exist_ok=True)
-        for record in tqdm(self.make_iter(self.post_path), desc="Parsing {} XML file".format(self.name), ncols=80):
+        if self.shard_number is not None and self.num_shards is not None:
+            question_ids = [int(record["Id"]) for record in tqdm(self.make_iter(self.post_path), desc="Get post ids for sharding", ncols=120) if is_question(record)]
+            shard_question_ids = set(np.array_split(question_ids, self.num_shards)[self.shard_number])
+        else:
+            shard_question_ids = None
+
+        for record in tqdm(self.make_iter(self.post_path), desc="Parsing {} posts".format(self.name), ncols=120):
             try:
                 if is_question(record):
+                    if shard_question_ids is not None:
+                        question_id = int(record["Id"])
+                        if question_id not in shard_question_ids:
+                            continue
+                        shard_question_ids.remove(question_id)
                     if has_answers(record):
                         trim_attribs(record, "question")
                         self.questions[record["Id"]] = record
@@ -110,6 +151,10 @@ class QA_Pairer():
                 traceback.print_exc()
         print("processing complete")
         self.print_status()
+
+        if shard_question_ids is not None and len(shard_question_ids) != 0:
+            print("warning: did not find {len(shard_question_ids)} questions ids that should have been in this shard (below):")
+            print(' '.join(str(x) for x in sorted(shard_question_ids)))
 
 
     def is_above_threshold(self, a_attribs):
@@ -155,6 +200,18 @@ class QA_Pairer():
     def write(self, out_name, out_str):
         if self.out_format == "none":
             pass
+        elif self.out_format == "fairseq":
+            assert self.tokenizer is not None
+            raw_file, bpe_file = self.ar
+            try:
+                line = filter_newlines(out_str)
+            except:
+                line = filter_newlines(handle_unicode_errors(out_str))
+            raw_file.write(line)
+            raw_file.write("\n\n")
+
+            bpe_file.write(' '.join(str(ix) for ix in self.tokenizer(line).ids))
+            bpe_file.write("\n\n")
         elif self.out_format == "txt":
             with open("{}/{}".format(self.out_folder, out_name), 'w') as f:
                 try:
@@ -176,15 +233,15 @@ class QA_Pairer():
 
     @classmethod
     def get_tags(cls, attrib):
-        if "Tags" not in attrib:
+        if "Tags" not in attrib or attrib["Tags"] is None:
             return []
         tags = cls.tag_split_re.split(attrib["Tags"])
         return [t for t in tags if bool(t)]
 
     def update_tag_and_token_counts(self, tags, out_str):
         self.tag_counter.update(tags)
-        if self.tokenizer is not None:
-            tokens = self.tokenizer(out_str)['input_ids']
+        if self.count_tokens and self.tokenizer is not None:
+            tokens = self.tokenizer(out_str).ids
             token_count = len(tokens)
             for tag in tags:
                 self.token_counter[tag] += token_count
@@ -215,34 +272,85 @@ class QA_Pairer():
                     keys_to_del.append(a_attribs["ParentId"])
                     if parent["Answers"] is not None and len(parent["Answers"]) > 0:
                         out_name = "{}_{}.txt".format(self.name, parent["Id"].zfill(10))
-                        out_str = ""
-                        out_str += 'Q:\n\n'
+                        out_strs = []
+
+                        question_body = ""
+
+                        question_attrs = {}
+                        tags = self.get_tags(parent)
+                        random.shuffle(tags)
+                        tag_str = ','.join(tags)
+                        if tag_str:
+                            question_attrs['tags'] = tag_str
+                        
+                        if (self.name, 'questions') in self.threshold_lower_bounds:
+                            question_votes = int(parent['Score'])
+                            question_attrs['dscore'] = threshold(self.threshold_lower_bounds[(self.name, 'questions')], question_votes)
 
                         if parent["TitleParsed"] is not None:
                             title_parsed = parent["TitleParsed"]
-                            out_str += '{}\n\n'.format(title_parsed)
+                            question_body += title_parsed
                         elif parent["Title"] is not None:
                             title_parsed = BeautifulSoup(parent["Title"], "html.parser").get_text()
-                            out_str += '{}\n\n'.format(title_parsed)
+                            question_body += title_parsed
+
                         if parent["BodyParsed"] is not None:
                             body_parsed = parent["BodyParsed"]
-                            out_str += '{}\n\n'.format(body_parsed)
+                            if question_body:
+                                question_body += '\n\n{}'.format(body_parsed)
+                            else:
+                                question_body = body_parsed
                         elif parent["Body"] is not None:
                             body_parsed = CodePreservingBeautifulSoup(parent["Body"], "html.parser").get_text()
-                            out_str += '{}\n\n'.format(body_parsed)
+                            if question_body:
+                                question_body += '\n\n{}'.format(body_parsed)
+                            else:
+                                question_body = body_parsed
+                        
+                        question_body = self.remove_username_re.sub("", question_body)
+                        out_strs.append(make_tagged("q", question_body, question_attrs, attribute_move_probability=self.attribute_move_probability))
+
+                        def add_comments(post_id):
+                            if self.comment_dict is not None:
+                                comments = self.comment_dict[parent["Id"]][:self.max_comments]
+                                comment_str = '\n'.join(make_tagged('c', comment, {}) for comment in comments)
+                                if comment_str:
+                                    out_strs.append(comment_str)
+                        
+                        add_comments(parent["Id"])
+
                         if parent["Answers"] is not None:
-                            key_score_dict = {}
-                            for k, a in parent["Answers"].items():
-                                key_score_dict[k] = int(a["Score"])
-                            key_score_dict = {k: v for k, v in sorted(key_score_dict.items(), key=lambda item: item[1], reverse=True)}
+                            answers = sorted(parent["Answers"].items(), lambda t: int(t[1]["Score"]), reverse=True)
                             count = 0
-                            for k in key_score_dict:
+                            for key, answer in answers:
                                 if count >= self.max_responses:
                                     break
-                                parent_body_parsed = parent["Answers"][k].get("BodyParsed", CodePreservingBeautifulSoup(parent["Answers"][k]["Body"], "html.parser").get_text())
-                                out_str += 'A:\n\n{}\n\n'.format(parent_body_parsed)
+                                if answer["BodyParsed"] is not None:
+                                    answer_body_parsed = answer["BodyParsed"]
+                                elif answer["Body"] is not None:
+                                    answer_body_parsed = CodePreservingBeautifulSoup(answer["Body"], "html.parser").get_text()
+                                else:
+                                    continue
+
+                                answer_body_parsed = self.remove_username_re.sub("", answer_body_parsed)
+
+                                answer_attrs = {}
+                                
+                                if (self.name, 'answers') in self.threshold_lower_bounds:
+                                    answer_votes = int(answer['Score'])
+                                    answer_attrs['dscore'] = threshold(self.threshold_lower_bounds[(self.name, 'answers')], answer_votes)
+
+                                if tag_str:
+                                    answer_attrs['tags'] = tag_str
+
+                                out_strs.append(make_tagged("a", answer_body_parsed, answer_attrs, attribute_move_probability=self.attribute_move_probability))
+
+                                add_comments(answer["Id"])
+                                
                                 count += 1
                                 self.answer_count += 1
+                        
+                        out_str = '\n'.join(out_strs)
 
                         self.question_count += 1
                         tags = self.get_tags(parent)
@@ -254,8 +362,6 @@ class QA_Pairer():
 
         for key in keys_to_del:
             self.questions.pop(key, None)
-
-from bs4 import BeautifulSoup, NavigableString, CData, Tag
 
 
 class CodePreservingBeautifulSoup(BeautifulSoup):

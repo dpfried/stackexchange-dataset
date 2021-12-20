@@ -72,6 +72,7 @@ if __name__ == "__main__":
         else:
             qs = np.arange(num_buckets+1)/num_buckets
 
+        print(name)
         for q, v in zip(qs, np.quantile(scores, qs)):
             print(f"{q:0.3f}: {v}")
         print()

@@ -17,50 +17,74 @@ def download_and_process_single(name, args):
     max_responses = args.max_responses
     try:
         name = name.strip().lower()
-        os.makedirs("dumps", exist_ok=True)
-        s = Stack_Exchange_Downloader(name)
-        path_to_posts = "dumps/{}/Posts.{}".format(name, args.in_format)
-        path_to_comments = "dumps/{}/Comments.{}".format(name, args.in_format)
-        if name != "stackoverflow":
-            path_to_7z = "dumps/{}.7z".format(s.sites[name]["url"])
-        else:
-            path_to_7z = "dumps/stackoverflow.com-Posts.7z"
-        out_folder = "out".format(name)
+        os.makedirs(args.in_folder, exist_ok=True)
+        path_to_posts = "{}/{}/Posts.{}".format(args.in_folder, name, args.in_format)
+        path_to_comments = "{}/{}/Comments.{}".format(args.in_folder, name, args.in_format)
+        out_folder = args.out_folder
         os.makedirs(out_folder, exist_ok=True)
-        if not os.path.isfile(path_to_7z):
-            # download 7z if it's not downloaded already
-            s.download()
         if not os.path.isfile(path_to_posts):
             # extract 7z if it's not extracted already
+            s = Stack_Exchange_Downloader(name)
+            if name != "stackoverflow":
+                path_to_7z = "{}/{}.7z".format(args.in_folder, s.sites[name]["url"])
+            else:
+                path_to_7z = "{}/stackoverflow.com-Posts.7z".format(args.in_folder)
+            if not os.path.isfile(path_to_7z):
+                # download 7z if it's not downloaded already
+                s.download()
             s.extract()
         if out_format == "lm_dataformat":
             archiver = Archive(out_folder)
         elif out_format == "zip":
             archiver = zipfile.ZipFile('{}/{}.zip'.format(out_folder, name), 'a')
+        elif out_format == "fairseq":
+            raw_folder = os.path.join(out_folder, "raw")
+            os.makedirs(raw_folder, exist_ok=True)
+            bpe_folder = os.path.join(out_folder, "bpe")
+            os.makedirs(bpe_folder, exist_ok=True)
+            if args.num_shards is not None and args.shard_num is not None:
+                suffix = f"_{args.shard_num}"
+            else:
+                suffix = ""
+            raw_fname = os.path.join(raw_folder, f"{name}{suffix}.raw")
+            bpe_fname = os.path.join(raw_folder, f"{name}{suffix}.bpe")
+            archiver = open(raw_fname, 'w'), open(bpe_fname, 'w')
         else:
             archiver = None
-        if args.count_tokens:
-            from transformers import PreTrainedTokenizerFast
+        if args.count_tokens or out_format == 'fairseq':
             from tokenizers import ByteLevelBPETokenizer
 
-            SPECIAL_TOKENS = ["<|endoftext|>", "<|pad|>"]
-
-            tokenizer_model = ByteLevelBPETokenizer.from_file(
-                args.tokenizer_encoder_file,
-                args.tokenizer_vocab_file,
+            tokenizer = ByteLevelBPETokenizer.from_file(
+                '/checkpoint/dpf/data/tokenizers/github-py+so_psno-True/vocab.json',
+                '/checkpoint/dpf/data/tokenizers/github-py+so_psno-True/merges.txt',
+                pretokenizer_split_newlines_only=True
+                # args.tokenizer_vocab_file,
+                # args.tokenizer_merges_file,
+                # pretokenizer_split_newlines_only=args.tokenizer_split_newlines_only,
             )
-            tokenizer_model.add_special_tokens(SPECIAL_TOKENS)
-            tokenizer = PreTrainedTokenizerFast(tokenizer_object=tokenizer_model)
         else:
             tokenizer = None
-        qa = QA_Pairer(path_to_posts, name=name, out_format=out_format, archiver=archiver, 
-                       min_score=min_score, max_responses=max_responses, tokenizer=tokenizer,
-                      comment_path=path_to_comments, in_format=args.in_format)
+        qa = QA_Pairer(path_to_posts,
+        name=name, 
+        out_format=out_format, 
+        archiver=archiver, 
+        in_format=args.in_format,
+        comment_path=path_to_comments, 
+        max_responses=max_responses,
+        max_comments=args.max_comments,
+        min_score=min_score,
+        shard_number=args.shard_number,
+        num_shards=args.num_shards,
+        tokenizer=tokenizer,
+        count_tokens=args.count_tokens)
         qa.main()
         if out_format == "lm_dataformat":
             archiver.commit(name)
         elif out_format == "zip":
             archiver.close()
+        elif out_format == "fairseq":
+            for f in archiver:
+                f.close()
         # try:
         #     os.remove(path_to_7z)
         # except FileNotFoundError:
@@ -108,13 +132,18 @@ if __name__ == "__main__":
                         default="lm_dataformat",
                         choices=["txt", "lm_dataformat", "zip", "none"],
                         type=str)
-    parser.add_argument('--min_score', help='minimum score of a response in order to be included in the dataset. Default 3.',
-                        type=int, default=3)
-    parser.add_argument('--max_responses', help='maximum number of responses (sorted by score) to include for each question. '
-                                                'Default 3.', type=int, default=3)
+    parser.add_argument('--min_score', help='minimum score of a response in order to be included in the dataset',
+                        type=int, default=0)
+    parser.add_argument('--max_responses', help='maximum number of responses (sorted by score) to include for each question. ', type=int, default=10)
+    parser.add_argument('--max_comments', help='maximum number of comments (sorted consecutively by post time) to include for each question/answer', type=int, default=5)
+    parser.add_argument('--num_shards', type=int)
+    parser.add_argument('--shard_number', type=int)
     parser.add_argument('--count_tokens', action='store_true')
-    parser.add_argument('--tokenizer_encoder_file', type=str, default='/private/home/halilakin/src/gpt2_bpe/encoder.json')
-    parser.add_argument('--tokenizer_vocab_file', type=str, default='/private/home/halilakin/src/gpt2_bpe/vocab.bpe')
+    parser.add_argument('--out_folder', default='out')
+    parser.add_argument('--in_folder', default='dumps')
+    # parser.add_argument('--tokenizer_vocab_file', type=str, default='/checkpoint/dpf/data/tokenizers/github-py+so_psno-True/vocab.json')
+    # parser.add_argument('--tokenizer_merges_file', type=str, default='/checkpoint/dpf/data/tokenizers/github-py+so_psno-True/merges.txt')
+    # parser.add_argument('--tokenizer_split_newlines_only', action='store_true')
 
     print(' '.join(sys.argv))
     args = parser.parse_args()

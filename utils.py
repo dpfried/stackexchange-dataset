@@ -1,4 +1,5 @@
 import os, re
+import random
 
 class Mean:
     def __init__(self):
@@ -88,9 +89,46 @@ def threshold(lower_bounds, value):
     assert float(value) == value
     assert all(float(x) == x for x in lower_bounds)
 
+    if value < lower_bounds[0]:
+        return 0
+
     disc_threshold = 0
     while disc_threshold < len(lower_bounds) and lower_bounds[disc_threshold] <= value:
         disc_threshold += 1
     disc_threshold -=1
     assert 0 <= disc_threshold < len(lower_bounds)
     return disc_threshold
+
+def make_tagged(tag, inner, attributes={}, insert_newlines=True, attribute_move_probability=None):
+    if attributes:
+        attr_strs = [f'{k}={v}' for k, v in attributes.items()]
+        if attribute_move_probability is not None:
+            assert 0 <= attribute_move_probability <= 1.0
+            begin_attr_strs = []
+            end_attr_strs = []
+            for x in attr_strs:
+                if random.random() < attribute_move_probability:
+                    end_attr_strs.append(x)
+                else:
+                    begin_attr_strs.append(x)
+        else:
+            begin_attr_strs = attr_strs
+            end_attr_strs = []
+    else:
+        begin_attr_strs = []
+        end_attr_strs = []
+    del attr_strs
+    if begin_attr_strs:
+        random.shuffle(begin_attr_strs)
+        begin_attr_string = f" {' '.join(begin_attr_strs)}"
+    else:
+        begin_attr_string = ''
+    if end_attr_strs:
+        random.shuffle(end_attr_strs)
+        end_attr_string = f" {' '.join(end_attr_strs)}"
+    else:
+        end_attr_string = ''
+    if insert_newlines:
+        return f'<| {tag}{begin_attr_string} |>\n{inner}\n<|/ {tag}{end_attr_string} |>'
+    else:
+        return f'<| {tag}{begin_attr_string} |> {inner} <|/ {tag}{end_attr_string} |>'
