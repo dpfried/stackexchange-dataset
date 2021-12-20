@@ -66,13 +66,13 @@ def has_answers(elem_attribs):
 def trim_attribs(elem_attribs, attrib_type="question"):
     """deletes non-useful data from attribs dict for questions / answers, returns remaining"""
     if attrib_type == "question":
-        to_keep = ['Id', 'Body', 'Title', 'Tags', 'AnswerCount', 'AcceptedAnswerId', 'PostTypeId']
+        to_keep = ['Id', 'Body', 'Title', 'Tags', 'AnswerCount', 'AcceptedAnswerId', 'PostTypeId', 'Score', 'BodyParsed', 'TitlePArsed']
         to_delete = [x for x in elem_attribs.keys() if x not in to_keep]
         [elem_attribs.pop(x, None) for x in to_delete]
         elem_attribs["ParsedAnswers"] = 0
         elem_attribs["Answers"] = {}
     elif attrib_type == "answer":
-        to_keep = ['Id', 'Body', 'Score']
+        to_keep = ['Id', 'Body', 'Score', 'BodyParsed']
         new_dict = {}
         for item in to_keep:
             new_dict[item] = elem_attribs[item]
@@ -114,10 +114,10 @@ def make_tagged(tag, inner, attributes={}, insert_newlines=True, attribute_move_
         else:
             begin_attr_strs = attr_strs
             end_attr_strs = []
+        del attr_strs
     else:
         begin_attr_strs = []
         end_attr_strs = []
-    del attr_strs
     if begin_attr_strs:
         random.shuffle(begin_attr_strs)
         begin_attr_string = f" {' '.join(begin_attr_strs)}"

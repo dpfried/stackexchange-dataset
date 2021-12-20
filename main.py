@@ -38,16 +38,19 @@ def download_and_process_single(name, args):
         elif out_format == "zip":
             archiver = zipfile.ZipFile('{}/{}.zip'.format(out_folder, name), 'a')
         elif out_format == "fairseq":
-            raw_folder = os.path.join(out_folder, "raw")
-            os.makedirs(raw_folder, exist_ok=True)
-            bpe_folder = os.path.join(out_folder, "bpe")
-            os.makedirs(bpe_folder, exist_ok=True)
-            if args.num_shards is not None and args.shard_num is not None:
-                suffix = f"_{args.shard_num}"
+            if args.num_shards is not None and args.shard_number is not None:
+                suffix = f"_{args.shard_number}"
             else:
                 suffix = ""
+
+            raw_folder = os.path.join(out_folder, "raw")
+            os.makedirs(raw_folder, exist_ok=True)
             raw_fname = os.path.join(raw_folder, f"{name}{suffix}.raw")
-            bpe_fname = os.path.join(raw_folder, f"{name}{suffix}.bpe")
+
+            bpe_folder = os.path.join(out_folder, "bpe")
+            os.makedirs(bpe_folder, exist_ok=True)
+            bpe_fname = os.path.join(bpe_folder, f"{name}{suffix}.bpe")
+
             archiver = open(raw_fname, 'w'), open(bpe_fname, 'w')
         else:
             archiver = None
@@ -67,6 +70,7 @@ def download_and_process_single(name, args):
         qa = QA_Pairer(path_to_posts,
         name=name, 
         out_format=out_format, 
+        out_folder=out_folder, 
         archiver=archiver, 
         in_format=args.in_format,
         comment_path=path_to_comments, 
@@ -109,10 +113,13 @@ def main(args):
     print('Downloading and processing stackexchange dumps for {}'.format(names))
     # Download & Process
     # init pool with as many CPUs as available
-    cpu_no = cpu_count() - 1
-    p = Pool(cpu_no)
-    #p.starmap(download_and_process_single, zip(names, repeat(args.out_format), repeat(args.min_score), repeat(args.max_responses), repeat(args))
-    p.starmap(download_and_process_single, zip(names, repeat(args)))
+    if len(names) > 1:
+        cpu_no = cpu_count() - 1
+        p = Pool(cpu_no)
+        #p.starmap(download_and_process_single, zip(names, repeat(args.out_format), repeat(args.min_score), repeat(args.max_responses), repeat(args))
+        p.starmap(download_and_process_single, zip(names, repeat(args)))
+    else:
+        download_and_process_single(names[0], args)
 
 
 if __name__ == "__main__":
@@ -130,7 +137,7 @@ if __name__ == "__main__":
     parser.add_argument('--out_format', help='format of out file - if you are processing everything this will need to be '
                                              'lm_dataformat, as you will run into number of files per directory limits.',
                         default="lm_dataformat",
-                        choices=["txt", "lm_dataformat", "zip", "none"],
+                        choices=["txt", "lm_dataformat", "zip", "none", "fairseq"],
                         type=str)
     parser.add_argument('--min_score', help='minimum score of a response in order to be included in the dataset',
                         type=int, default=0)

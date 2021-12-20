@@ -58,7 +58,7 @@ class QA_Pairer():
         self.attribute_move_probability = attribute_move_probability
         assert in_format in ["csv", "xml"], "In format not recognized"
         self.in_format = in_format
-        assert out_format in ["txt", "lm_dataformat", "zip", "none"], "Out format not recognized"
+        assert out_format in ["txt", "lm_dataformat", "zip", "none", "fairseq"], "Out format not recognized"
         self.out_format = out_format
         if out_format in ["lm_dataformat", "zip", "fairseq"]:
             assert archiver is not None
@@ -128,7 +128,7 @@ class QA_Pairer():
             shard_question_ids = None
 
         for record in tqdm(self.make_iter(self.post_path), desc="Parsing {} posts".format(self.name), ncols=120):
-            try:
+            # try:
                 if is_question(record):
                     if shard_question_ids is not None:
                         question_id = int(record["Id"])
@@ -147,8 +147,8 @@ class QA_Pairer():
                     # append the answer to the relevant question's OtherAnswers dict
                     self.add_answer(record)
                     self.check_complete(record)
-            except:
-                traceback.print_exc()
+            # except :
+            #     traceback.print_exc()
         print("processing complete")
         self.print_status()
 
@@ -210,10 +210,11 @@ class QA_Pairer():
             raw_file.write(line)
             raw_file.write("\n\n")
 
-            bpe_file.write(' '.join(str(ix) for ix in self.tokenizer(line).ids))
+            bpe_file.write(' '.join(str(ix) for ix in self.tokenizer.encode(line).ids))
             bpe_file.write("\n\n")
         elif self.out_format == "txt":
-            with open("{}/{}".format(self.out_folder, out_name), 'w') as f:
+            fname = "{}/{}".format(self.out_folder, out_name)
+            with open(fname, 'w') as f:
                 try:
                     f.write(filter_newlines(out_str))
                 except:
@@ -241,7 +242,7 @@ class QA_Pairer():
     def update_tag_and_token_counts(self, tags, out_str):
         self.tag_counter.update(tags)
         if self.count_tokens and self.tokenizer is not None:
-            tokens = self.tokenizer(out_str).ids
+            tokens = self.tokenizer.encode(out_str).ids
             token_count = len(tokens)
             for tag in tags:
                 self.token_counter[tag] += token_count
@@ -308,19 +309,19 @@ class QA_Pairer():
                                 question_body = body_parsed
                         
                         question_body = self.remove_username_re.sub("", question_body)
-                        out_strs.append(make_tagged("q", question_body, question_attrs, attribute_move_probability=self.attribute_move_probability))
+                        out_strs.append(make_tagged("q", question_body.strip(), question_attrs, attribute_move_probability=self.attribute_move_probability))
 
                         def add_comments(post_id):
                             if self.comment_dict is not None:
-                                comments = self.comment_dict[parent["Id"]][:self.max_comments]
-                                comment_str = '\n'.join(make_tagged('c', comment, {}) for comment in comments)
+                                comments = self.comment_dict[post_id][:self.max_comments]
+                                comment_str = '\n'.join(make_tagged('c', comment.strip(), {}) for comment in comments)
                                 if comment_str:
                                     out_strs.append(comment_str)
                         
                         add_comments(parent["Id"])
 
                         if parent["Answers"] is not None:
-                            answers = sorted(parent["Answers"].items(), lambda t: int(t[1]["Score"]), reverse=True)
+                            answers = sorted(parent["Answers"].items(), key=lambda t: int(t[1]["Score"]), reverse=True)
                             count = 0
                             for key, answer in answers:
                                 if count >= self.max_responses:
@@ -343,7 +344,7 @@ class QA_Pairer():
                                 if tag_str:
                                     answer_attrs['tags'] = tag_str
 
-                                out_strs.append(make_tagged("a", answer_body_parsed, answer_attrs, attribute_move_probability=self.attribute_move_probability))
+                                out_strs.append(make_tagged("a", answer_body_parsed.strip(), answer_attrs, attribute_move_probability=self.attribute_move_probability))
 
                                 add_comments(answer["Id"])
                                 
